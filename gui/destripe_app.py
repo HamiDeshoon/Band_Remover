@@ -1,6 +1,6 @@
 """
 DeStripe GUI — Main Application Window
-PySide6 · Dark Teal Medical Imaging Theme
+PyQt5 · Dark Teal Medical Imaging Theme
 ======================================================
 Features:
   1. Deep Learning SMP U-Net / EfficientNet-b0 (`destripe_best_eff.ckpt`)
@@ -27,16 +27,16 @@ if sys.platform == "win32":
         except Exception:
             pass
 
-# ── PySide6 ─────────────────────────────────────────────────────────────────
-from PySide6.QtCore import (
-    Qt, QThread, Signal, QTimer, QSize, QPropertyAnimation,
+# ── PyQt5 ─────────────────────────────────────────────────────────────────
+from PyQt5.QtCore import (
+    Qt, QThread, pyqtSignal as Signal, QTimer, QSize, QPropertyAnimation,
     QEasingCurve, QPoint,
 )
-from PySide6.QtGui import (
+from PyQt5.QtGui import (
     QColor, QPainter, QFont, QIcon, QAction, QPixmap,
     QLinearGradient, QGradient,
 )
-from PySide6.QtWidgets import (
+from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget,
     QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QLineEdit, QProgressBar,
@@ -1114,7 +1114,7 @@ def main():
     cfg = load_cfg()
     win = MainWindow(cfg)
     win.show()
-    sys.exit(app.exec())
+    sys.exit(app.exec_())
 
 
 if __name__ == "__main__":

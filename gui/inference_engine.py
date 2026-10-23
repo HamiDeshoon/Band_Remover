@@ -22,7 +22,7 @@ if sys.platform == "win32":
         except Exception:
             pass
 
-from PySide6.QtCore import QThread, Signal
+from PyQt5.QtCore import QThread, pyqtSignal as Signal
 
 import numpy as np
 import torch
@@ -165,7 +165,7 @@ def load_model(ckpt_path: str, device: torch.device) -> nn.Module:
         model.unet.load_state_dict(clean_sd, strict=False)
     else:
         model = DestripePlus(b=32)
-        clean_sd = {k.removeprefix("net."): v for k, v in raw.items() if not k.startswith("pos_w")}
+        clean_sd = {(k[4:] if k.startswith("net.") else k): v for k, v in raw.items() if not k.startswith("pos_w")}
         model.load_state_dict(clean_sd, strict=True)
 
     model.eval()

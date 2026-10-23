@@ -5,15 +5,15 @@ Clicking opens a file picker.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import (
-    Qt, Signal, QPropertyAnimation, QEasingCurve, Property,
+from PyQt5.QtCore import (
+    Qt, pyqtSignal as Signal, QPropertyAnimation, QEasingCurve, pyqtProperty as Property,
     QPoint, QSize,
 )
-from PySide6.QtGui import (
+from PyQt5.QtGui import (
     QColor, QPainter, QPen, QFont, QDragEnterEvent,
     QDropEvent, QMouseEvent, QPainterPath,
 )
-from PySide6.QtWidgets import QWidget, QFileDialog, QSizePolicy
+from PyQt5.QtWidgets import QWidget, QFileDialog, QSizePolicy
 
 
 # Valid file extensions accepted by the drop zone

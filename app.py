@@ -1,6 +1,6 @@
 """
 DeStripe Application Main Entry Point.
-Automatically dispatches to GUI (if PySide6/Tkinter display available) or CLI mode.
+Automatically dispatches to GUI (if PyQt5/Tkinter display available) or CLI mode.
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def main():
         from gui.destripe_app import main as gui_main
         gui_main()
     except Exception as e:
-        print(f"PySide6 GUI unavailable ({e}). Attempting pure-Python CLI/GUI...")
+        print(f"PyQt5 GUI unavailable ({e}). Attempting pure-Python CLI/GUI...")
         if args.input:
             run_cli(args)
         else:
