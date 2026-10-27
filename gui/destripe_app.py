@@ -33,7 +33,7 @@ from PySide6.QtCore import (
     QEasingCurve, QPoint,
 )
 from PySide6.QtGui import (
-    QColor, QPainter, QFont, QIcon, QAction, QPixmap,
+    QColor, QPainter, QFont, QIcon, QPixmap,
     QLinearGradient, QGradient,
 )
 from PySide6.QtWidgets import (
@@ -45,6 +45,14 @@ from PySide6.QtWidgets import (
     QMessageBox, QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox,
 )
 
+try:
+    from PySide6.QtWidgets import QAction
+except ImportError:
+    try:
+        from PySide6.QtGui import QAction
+    except ImportError:
+        QAction = None
+
 # ── Local modules ────────────────────────────────────────────────────────────
 _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE.parent
@@ -54,7 +62,7 @@ for _p in (_HERE, _ROOT):
 
 from gui.styles.theme import get_qss
 from gui.config import load as load_cfg, save as save_cfg
-from gui.io_utils import read_image, save_image, VALID_EXTS
+from gui.io_utils import read_image, save_image, is_supported_file, is_dicom_file, VALID_EXTS
 from gui.inference_engine import (
     load_model, select_device, device_label,
     InferenceWorker,
@@ -249,8 +257,8 @@ class SettingsTab(QWidget):
         grid.addWidget(QLabel("Border Exclude Ratio:"), 2, 2)
         self._border_spin = QDoubleSpinBox()
         self._border_spin.setRange(0.0, 0.4)
-        self._border_spin.setSingleStep(0.05)
-        self._border_spin.setValue(0.15)
+        self._border_spin.setSingleStep(0.01)
+        self._border_spin.setValue(0.01)
         self._border_spin.valueChanged.connect(self._update_classical_params)
         grid.addWidget(self._border_spin, 2, 3)
 
@@ -568,7 +576,7 @@ class SingleImageTab(QWidget):
         if self._denoised is None:
             return
         try:
-            out = save_image(self._denoised, self._src_path, self._meta)
+            out = save_image(self._denoised, self._src_path, self._meta, bands=self._detected_bands, settings=self._classical_settings)
             self.status_message.emit(f"Saved: {Path(out).name}")
             QMessageBox.information(self, "Saved", f"Denoised image saved to:\n{out}")
         except Exception as exc:
@@ -696,7 +704,7 @@ class BatchFolderTab(QWidget):
     def _scan_folder(self):
         self._files = [
             str(p) for p in Path(self._folder).rglob("*")
-            if p.suffix.lower() in VALID_EXTS
+            if p.is_file() and is_supported_file(p)
         ]
         self._table.clear_all()
         self._metas.clear()
@@ -768,7 +776,7 @@ class BatchFolderTab(QWidget):
 
     def _on_batch_result(self, row: int, path: str, meta: dict, out: np.ndarray):
         try:
-            saved = save_image(out, path, meta)
+            saved = save_image(out, path, meta, settings=self._classical_settings)
             self._table.update_status(row, "done", out_path=saved)
         except Exception as exc:
             self._table.update_status(row, "error")
@@ -962,7 +970,7 @@ class QueueTab(QWidget):
 
     def _on_result(self, row: int, path: str, meta: dict, out: np.ndarray):
         try:
-            saved = save_image(out, path, meta)
+            saved = save_image(out, path, meta, settings=self._classical_settings)
             self._table.update_status(row, "done", out_path=saved)
         except Exception as exc:
             self._table.update_status(row, "error")

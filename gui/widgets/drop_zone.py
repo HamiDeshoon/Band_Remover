@@ -5,6 +5,7 @@ Clicking opens a file picker.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from PySide6.QtCore import (
     Qt, Signal, QPropertyAnimation, QEasingCurve, Property,
     QPoint, QSize,
@@ -15,9 +16,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget, QFileDialog, QSizePolicy
 
-
-# Valid file extensions accepted by the drop zone
-VALID_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".dcm", ".dicom"}
+from gui.io_utils import is_supported_file, VALID_EXTS
 
 
 class DropZone(QWidget):
@@ -62,7 +61,7 @@ class DropZone(QWidget):
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
-            if any(url.toLocalFile().lower().endswith(tuple(VALID_EXTS)) for url in urls):
+            if any(is_supported_file(url.toLocalFile()) for url in urls):
                 event.acceptProposedAction()
                 self._animate_glow(True)
                 return
@@ -76,7 +75,7 @@ class DropZone(QWidget):
         paths = [
             url.toLocalFile()
             for url in event.mimeData().urls()
-            if url.toLocalFile().lower().endswith(tuple(VALID_EXTS))
+            if is_supported_file(url.toLocalFile())
         ]
         if paths:
             self.files_dropped.emit(paths if self._multi else paths[:1])
@@ -88,9 +87,10 @@ class DropZone(QWidget):
 
     def _open_picker(self):
         ext_filter = (
-            "Images & DICOM (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.dcm *.dicom)"
-            ";;PNG (*.png);;JPEG (*.jpg *.jpeg);;TIFF (*.tif *.tiff)"
-            ";;BMP (*.bmp);;DICOM (*.dcm *.dicom);;All Files (*)"
+            "All Supported Files (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.dcm *.dicom);;"
+            "All Files (*);;"
+            "DICOM (*.dcm *.dicom);;"
+            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
         )
         if self._multi:
             paths, _ = QFileDialog.getOpenFileNames(self, "Open Images", "", ext_filter)

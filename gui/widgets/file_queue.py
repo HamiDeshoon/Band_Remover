@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 
-VALID_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".dcm", ".dicom"}
+from gui.io_utils import is_supported_file, VALID_EXTS
 
 
 class FileQueue(QWidget):
@@ -77,7 +77,7 @@ class FileQueue(QWidget):
     # ── Public API ────────────────────────────────────────────────
     def add_paths(self, paths: list[str]):
         for p in paths:
-            if p not in self._paths and Path(p).suffix.lower() in VALID_EXTS:
+            if p not in self._paths and is_supported_file(p):
                 self._paths.append(p)
                 item = QListWidgetItem(Path(p).name)
                 item.setToolTip(p)
@@ -105,8 +105,10 @@ class FileQueue(QWidget):
     # ── Internal ─────────────────────────────────────────────────
     def _add_files(self):
         ext_filter = (
-            "Images & DICOM (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.dcm *.dicom)"
-            ";;All Files (*)"
+            "All Supported Files (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.dcm *.dicom);;"
+            "All Files (*);;"
+            "DICOM (*.dcm *.dicom);;"
+            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
         )
         paths, _ = QFileDialog.getOpenFileNames(self, "Add Files to Queue", "", ext_filter)
         if paths:
