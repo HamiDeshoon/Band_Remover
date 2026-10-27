@@ -5,16 +5,21 @@ Clicking opens a file picker.
 """
 from __future__ import annotations
 
+<<<<<<< HEAD
 from pathlib import Path
 from PySide6.QtCore import (
     Qt, Signal, QPropertyAnimation, QEasingCurve, Property,
+=======
+from PyQt5.QtCore import (
+    Qt, pyqtSignal as Signal, QPropertyAnimation, QEasingCurve, pyqtProperty as Property,
+>>>>>>> 95cdcbf7c9426c71a39a09d660b75d5cfba86570
     QPoint, QSize,
 )
-from PySide6.QtGui import (
+from PyQt5.QtGui import (
     QColor, QPainter, QPen, QFont, QDragEnterEvent,
     QDropEvent, QMouseEvent, QPainterPath,
 )
-from PySide6.QtWidgets import QWidget, QFileDialog, QSizePolicy
+from PyQt5.QtWidgets import QWidget, QFileDialog, QSizePolicy
 
 from gui.io_utils import is_supported_file, VALID_EXTS
 

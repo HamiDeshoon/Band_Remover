@@ -6,12 +6,12 @@ Supports optional band artifact overlay highlights on the noisy canvas.
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import Qt, QPoint, QRectF
-from PySide6.QtGui import (
+from PyQt5.QtCore import Qt, QPoint, QRectF
+from PyQt5.QtGui import (
     QImage, QPixmap, QPainter, QPen, QColor, QFont,
     QWheelEvent, QMouseEvent, QPainterPath,
 )
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QSizePolicy, QFrame
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QSizePolicy, QFrame
 
 from gui.classical_filter import ClassicalBand
 
@@ -148,7 +148,7 @@ class _ImageCanvas(QWidget):
 
     def wheelEvent(self, event: QWheelEvent):
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-        self.zoom(factor, event.position().toPoint())
+        self.zoom(factor, event.pos())
         if hasattr(self.parent(), "_sync_view"):
             self.parent()._sync_view(source=self)
         event.accept()

@@ -5,8 +5,8 @@ Supports Add / Remove selected / Clear all.
 from __future__ import annotations
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (
+from PyQt5.QtCore import Qt, pyqtSignal as Signal
+from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
     QListWidgetItem, QPushButton, QFileDialog, QLabel,
     QSizePolicy,
