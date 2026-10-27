@@ -32,13 +32,8 @@ from PyQt5.QtCore import (
     Qt, QThread, pyqtSignal as Signal, QTimer, QSize, QPropertyAnimation,
     QEasingCurve, QPoint,
 )
-<<<<<<< HEAD
-from PySide6.QtGui import (
-    QColor, QPainter, QFont, QIcon, QPixmap,
-=======
 from PyQt5.QtGui import (
-    QColor, QPainter, QFont, QIcon, QAction, QPixmap,
->>>>>>> 95cdcbf7c9426c71a39a09d660b75d5cfba86570
+    QColor, QPainter, QFont, QIcon, QPixmap,
     QLinearGradient, QGradient,
 )
 from PyQt5.QtWidgets import (
@@ -51,12 +46,12 @@ from PyQt5.QtWidgets import (
 )
 
 try:
-    from PySide6.QtWidgets import QAction
+    from PyQt5.QtWidgets import QAction
 except ImportError:
     try:
-        from PySide6.QtGui import QAction
+        from PySide6.QtWidgets import QAction
     except ImportError:
-        QAction = None
+        from PySide6.QtGui import QAction
 
 # ── Local modules ────────────────────────────────────────────────────────────
 _HERE = Path(__file__).resolve().parent
@@ -220,52 +215,78 @@ class SettingsTab(QWidget):
         # Interpolation method
         grid.addWidget(QLabel("Interpolation Method:"), 0, 0)
         self._interp_combo = QComboBox()
-        self._interp_combo.addItems(["PCHIP (Hermite Cubic)", "Linear"])
+        self._interp_combo.addItems([
+            "Edge-Preserving + Texture (Clinical)",
+            "Linear Context",
+            "PCHIP Spline",
+        ])
         self._interp_combo.currentIndexChanged.connect(self._update_classical_params)
         grid.addWidget(self._interp_combo, 0, 1)
 
+        # Artifact Orientation
+        grid.addWidget(QLabel("Artifact Orientation:"), 1, 0)
+        self._orient_combo = QComboBox()
+        self._orient_combo.addItems([
+            "Auto (Detect Dominance)",
+            "Horizontal Lines Only (Rows)",
+            "Vertical Lines Only (Columns)",
+            "Both (Cross-Directional)",
+        ])
+        self._orient_combo.currentIndexChanged.connect(self._update_classical_params)
+        grid.addWidget(self._orient_combo, 1, 1)
+
         # Sensitivity
-        grid.addWidget(QLabel("Detection Sensitivity:"), 1, 0)
+        grid.addWidget(QLabel("Detection Sensitivity:"), 2, 0)
         self._sens_spin = QDoubleSpinBox()
-        self._sens_spin.setRange(0.5, 5.0)
-        self._sens_spin.setSingleStep(0.1)
-        self._sens_spin.setValue(1.5)
+        self._sens_spin.setRange(0.5, 10.0)
+        self._sens_spin.setSingleStep(0.5)
+        self._sens_spin.setValue(2.5)
         self._sens_spin.valueChanged.connect(self._update_classical_params)
-        grid.addWidget(self._sens_spin, 1, 1)
+        grid.addWidget(self._sens_spin, 2, 1)
 
         # Max Band Width
-        grid.addWidget(QLabel("Estimated Band Width (px):"), 2, 0)
+        grid.addWidget(QLabel("Estimated Band Width (px):"), 3, 0)
         self._width_spin = QSpinBox()
         self._width_spin.setRange(1, 50)
         self._width_spin.setValue(5)
         self._width_spin.valueChanged.connect(self._update_classical_params)
-        grid.addWidget(self._width_spin, 2, 1)
+        grid.addWidget(self._width_spin, 3, 1)
 
         # Neighbor Context
         grid.addWidget(QLabel("Neighbor Context (px):"), 0, 2)
         self._ctx_spin = QSpinBox()
         self._ctx_spin.setRange(5, 100)
-        self._ctx_spin.setValue(20)
+        self._ctx_spin.setValue(15)
         self._ctx_spin.valueChanged.connect(self._update_classical_params)
         grid.addWidget(self._ctx_spin, 0, 3)
 
+        # Min Line Coverage (%)
+        grid.addWidget(QLabel("Min Line Coverage (%):"), 1, 2)
+        self._coverage_spin = QSpinBox()
+        self._coverage_spin.setRange(10, 95)
+        self._coverage_spin.setSingleStep(5)
+        self._coverage_spin.setValue(35)
+        self._coverage_spin.setSuffix("%")
+        self._coverage_spin.valueChanged.connect(self._update_classical_params)
+        grid.addWidget(self._coverage_spin, 1, 3)
+
         # Gaussian Smoothing Sigma
-        grid.addWidget(QLabel("Gaussian Smoothing (σ):"), 1, 2)
+        grid.addWidget(QLabel("Gaussian Smoothing (σ):"), 2, 2)
         self._sigma_spin = QDoubleSpinBox()
         self._sigma_spin.setRange(0.0, 5.0)
         self._sigma_spin.setSingleStep(0.2)
-        self._sigma_spin.setValue(1.0)
+        self._sigma_spin.setValue(0.0)
         self._sigma_spin.valueChanged.connect(self._update_classical_params)
-        grid.addWidget(self._sigma_spin, 1, 3)
+        grid.addWidget(self._sigma_spin, 2, 3)
 
         # Border Exclude Ratio
-        grid.addWidget(QLabel("Border Exclude Ratio:"), 2, 2)
+        grid.addWidget(QLabel("Border Exclude Ratio:"), 3, 2)
         self._border_spin = QDoubleSpinBox()
-        self._border_spin.setRange(0.0, 0.4)
+        self._border_spin.setRange(0.0, 0.2)
         self._border_spin.setSingleStep(0.01)
-        self._border_spin.setValue(0.01)
+        self._border_spin.setValue(0.03)
         self._border_spin.valueChanged.connect(self._update_classical_params)
-        grid.addWidget(self._border_spin, 2, 3)
+        grid.addWidget(self._border_spin, 3, 3)
 
         c_lay.addLayout(grid)
         outer.addWidget(c_card)
@@ -293,14 +314,24 @@ class SettingsTab(QWidget):
             QTimer.singleShot(400, self._load_checkpoint)
 
     def _update_classical_params(self):
-        method_str = "pchip" if self._interp_combo.currentIndex() == 0 else "linear"
+        interp_idx = self._interp_combo.currentIndex()
+        method_map = {0: "smoothstep_texture", 1: "linear", 2: "pchip"}
+        method_str = method_map.get(interp_idx, "smoothstep_texture")
+
+        orient_idx = self._orient_combo.currentIndex()
+        orient_map = {0: "auto", 1: "horizontal", 2: "vertical", 3: "both"}
+        orient_str = orient_map.get(orient_idx, "auto")
+
         self._classical_settings = ClassicalSettings(
             band_width_estimate=self._width_spin.value(),
             neighbor_pixels=self._ctx_spin.value(),
             detection_sensitivity=self._sens_spin.value(),
             border_exclude_ratio=self._border_spin.value(),
+            orientation=orient_str,
             interpolation_method=method_str,
             gaussian_sigma=self._sigma_spin.value(),
+            min_coverage_ratio=float(self._coverage_spin.value()) / 100.0,
+            texture_matching=True,
         )
         self.settings_changed.emit(self._classical_settings)
 

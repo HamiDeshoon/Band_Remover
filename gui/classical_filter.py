@@ -1,18 +1,18 @@
 """
 Classical / Non-Deep Learning Band & Streak Artifact Detection and Correction.
-Ported and enhanced from Dicom_Band_Fixer algorithms:
-  - 1D Profile analysis (horizontal & vertical)
-  - Running median baseline extraction & robust MAD statistical deviation thresholding
-  - Multi-column Laplacian second-derivative anomaly detection for detector lines
-  - Contiguous band boundary segmentation (bright & dark lines)
-  - Directional interpolation (PCHIP or Linear) using unaffected neighbor regions
-  - Orthogonal 1D Gaussian smoothing across interpolated bands
-  - Full native support for 8-bit, 16-bit (uint16/int16), and float images
+Engineered for medical X-ray and CT imaging (Dicom_Band_Fixer enhanced):
+  - Robust multi-scale second-derivative Laplacian & profile baseline analysis
+  - Detector line coverage verification (rejects local anatomy & OSD annotations)
+  - Auto-orientation disambiguation (horizontal vs vertical dominance)
+  - Prominence score filtering (eliminates spurious background noise lines)
+  - Edge-preserving smoothstep / monotonic boundary interpolation
+  - Coherent quantum mottle texture synthesis for imperceptible repairs
+  - Full native 16-bit (uint16/int16) and 8-bit dynamic range preservation
 """
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Literal, Tuple
 import numpy as np
 
@@ -53,10 +53,7 @@ def gaussian_filter_1d(arr: np.ndarray, sigma: float = 1.0) -> np.ndarray:
 
 
 def pchip_interpolate(x_good: np.ndarray, y_good: np.ndarray, x_bad: np.ndarray) -> np.ndarray:
-    """
-    Piecewise Cubic Hermite Interpolating Polynomial (PCHIP) in 1D.
-    Preserves monotonicity and avoids polynomial overshoots/ringing.
-    """
+    """Piecewise Cubic Hermite Interpolating Polynomial in 1D."""
     x_good = np.asarray(x_good, dtype=np.float64)
     y_good = np.asarray(y_good, dtype=np.float64)
     x_bad = np.asarray(x_bad, dtype=np.float64)
@@ -113,11 +110,6 @@ def pchip_interpolate(x_good: np.ndarray, y_good: np.ndarray, x_bad: np.ndarray)
     return out
 
 
-def linear_interpolate(x_good: np.ndarray, y_good: np.ndarray, x_bad: np.ndarray) -> np.ndarray:
-    """Standard 1D linear interpolation."""
-    return np.interp(x_bad, x_good, y_good)
-
-
 # ────────────────────────── DATA STRUCTURES ──────────────────────────────────
 
 @dataclass
@@ -134,11 +126,14 @@ class ClassicalBand:
 @dataclass
 class ClassicalSettings:
     band_width_estimate: int = 5
-    neighbor_pixels: int = 20
-    detection_sensitivity: float = 1.5
-    border_exclude_ratio: float = 0.01   # Default 1% to ensure lines near top/bottom are never missed
-    interpolation_method: Literal["pchip", "linear"] = "pchip"
-    gaussian_sigma: float = 1.0
+    neighbor_pixels: int = 15
+    detection_sensitivity: float = 2.5
+    border_exclude_ratio: float = 0.03     # 3% excludes OSD text overlays at borders
+    orientation: Literal["auto", "horizontal", "vertical", "both"] = "auto"
+    interpolation_method: Literal["smoothstep_texture", "linear", "pchip"] = "smoothstep_texture"
+    gaussian_sigma: float = 0.0            # Default 0.0: avoid blurring sharp anatomical edges
+    min_coverage_ratio: float = 0.35       # True detector line must span >= 35% of the detector
+    texture_matching: bool = True          # Inject coherent quantum mottle texture for invisible blending
 
 
 # ────────────────────────── DETECTION & CORRECTION ───────────────────────────
@@ -148,18 +143,14 @@ def detect_artifact_bands(
     settings: ClassicalSettings | None = None,
 ) -> List[ClassicalBand]:
     """
-    Detect vertical and horizontal bands in grayscale image (2D numpy array: uint8, uint16, int16, or float).
-    Uses a hybrid approach combining:
-      1. Robust profile deviation (MAD-based thresholding, insensitive to foreground objects).
-      2. Multi-column Laplacian second-derivative anomaly detection for detector lines.
-    Returns list of ClassicalBand sorted by artifact prominence score.
+    Detect vertical and horizontal bands in grayscale images (uint8, uint16, int16, float).
+    Applies multi-scale Laplacian second-derivative analysis with line coverage validation.
     """
     if settings is None:
         settings = ClassicalSettings()
 
     img_data = img.astype(np.float64)
     rows, cols = img_data.shape[:2]
-    bands: List[ClassicalBand] = []
 
     # Safe normalization to 0..255 for thresholding invariance across 8-bit and 16-bit
     i_min = float(np.min(img_data))
@@ -167,146 +158,166 @@ def detect_artifact_bands(
     span = max(i_max - i_min, 1e-5)
     img_norm = (img_data - i_min) / span * 255.0
 
-    # ── Horizontal Analysis (mean across rows & row Laplacian) ────────────────
-    h_start = max(0, int(math.floor(rows * settings.border_exclude_ratio)))
-    h_end = min(rows, int(math.ceil(rows * (1.0 - settings.border_exclude_ratio))))
+    orient = getattr(settings, "orientation", "auto").lower()
+    h_candidates: List[ClassicalBand] = []
+    v_candidates: List[ClassicalBand] = []
 
-    if h_end > h_start + 6:
-        h_profile = np.mean(img_norm, axis=1)[h_start:h_end]
-        n_h = len(h_profile)
-        h_win = max(5, min(51, n_h // 20))
-        if h_win % 2 == 0:
-            h_win += 1
+    # ── Horizontal Analysis (Rows across Columns) ───────────────────────────
+    if orient in ("auto", "horizontal", "both") and rows > 6:
+        h_start = max(1, int(rows * settings.border_exclude_ratio))
+        h_end = min(rows - 1, int(rows * (1.0 - settings.border_exclude_ratio)))
 
-        h_baseline = median_filter_1d(h_profile, h_win)
-        h_dev = h_profile - h_baseline
+        if h_end > h_start + 4:
+            # 2nd derivative across vertical axis (H-2, W)
+            lap_h = np.abs(img_norm[1:-1, :] - 0.5 * (img_norm[:-2, :] + img_norm[2:, :]))
+            med_lap = float(np.median(lap_h))
+            mad_lap = float(np.median(np.abs(lap_h - med_lap)))
+            noise_sigma_h = max(1.4826 * mad_lap, 1.0)
+            pixel_thresh_h = max(noise_sigma_h * settings.detection_sensitivity, 6.0)
 
-        # Robust statistics via MAD to prevent foreground objects (e.g. key/bone) from raising threshold
-        h_med = float(np.median(h_dev))
-        h_mad = float(np.median(np.abs(h_dev - h_med)))
-        h_robust_std = max(1.4826 * h_mad, 0.2)
-        h_thresh = settings.detection_sensitivity * h_robust_std
-        h_profile_flag = np.abs(h_dev - h_med) > h_thresh
+            # Measure coverage: fraction of columns in row r with abnormal deviation
+            coverage_h = np.pad((lap_h > pixel_thresh_h).mean(axis=1), (1, 1), mode="constant")
+            row_med_dev = np.pad(np.median(lap_h, axis=1), (1, 1), mode="constant")
 
-        # Row Laplacian: measures row discontinuity across columns
-        # Detector lines span the entire detector, so the column median/percentile of row differences spikes sharply
-        if rows > 4:
-            diff_h = np.abs(img_norm[1:-1, :] - 0.5 * (img_norm[:-2, :] + img_norm[2:, :]))
-            row_lap = np.percentile(diff_h, 40, axis=1)
-            row_lap = np.pad(row_lap, (1, 1), mode="edge")[h_start:h_end]
-            lap_base = median_filter_1d(row_lap, h_win)
-            lap_dev = row_lap - lap_base
-            lap_med = float(np.median(lap_dev))
-            lap_mad = float(np.median(np.abs(lap_dev - lap_med)))
-            lap_std = max(1.4826 * lap_mad, 0.2)
-            h_lap_flag = (lap_dev - lap_med) > (settings.detection_sensitivity * lap_std)
-        else:
-            h_lap_flag = np.zeros(n_h, dtype=bool)
-            lap_dev = np.zeros(n_h, dtype=np.float64)
+            # 1D row profile baseline deviation (for broad soft bands)
+            h_profile = np.mean(img_norm, axis=1)
+            h_win = max(5, min(51, len(h_profile) // 20 | 1))
+            h_dev = np.abs(h_profile - median_filter_1d(h_profile, h_win))
+            mad_p = float(np.median(np.abs(h_dev - np.median(h_dev))))
+            prof_thresh = max(1.4826 * mad_p * settings.detection_sensitivity, 4.0)
 
-        h_flag = h_profile_flag | h_lap_flag
+            # Flag rows that meet detector line criteria:
+            # High line coverage across columns OR strong profile deviation with moderate coverage
+            flagged_h = (coverage_h >= settings.min_coverage_ratio) | (
+                (coverage_h >= 0.20) & (h_dev >= prof_thresh)
+            )
 
-        # Group contiguous artifact rows
-        in_reg = False
-        reg_start = 0
-        h_regions: List[Tuple[int, int]] = []
-        for i, val in enumerate(h_flag):
-            if val and not in_reg:
-                in_reg = True
-                reg_start = i
-            elif not val and in_reg:
-                in_reg = False
-                h_regions.append((reg_start, i - 1))
-        if in_reg:
-            h_regions.append((reg_start, len(h_flag) - 1))
-
-        max_allowed_w = max(settings.band_width_estimate * 6, 40)
-        for s_idx, e_idx in h_regions:
-            w = e_idx - s_idx + 1
-            if w <= max_allowed_w:
-                seg_dev = np.abs(h_dev[s_idx:e_idx + 1])
-                sum_dev = float(np.sum(seg_dev))
-                max_dev = float(np.max(seg_dev))
-                lap_s = float(np.sum(lap_dev[s_idx:e_idx + 1])) if rows > 4 else 0.0
-                score = max(sum_dev, lap_s * 2.0) * (1.0 + max_dev / 10.0)
-                if score > 0:
-                    bands.append(ClassicalBand(
-                        id=f"h_{s_idx + h_start}_{e_idx + h_start}",
+            # Group contiguous rows
+            in_b = False
+            s = 0
+            for r in range(h_start, h_end):
+                if flagged_h[r] and not in_b:
+                    in_b = True
+                    s = r
+                elif not flagged_h[r] and in_b:
+                    in_b = False
+                    e = r - 1
+                    w = e - s + 1
+                    if w <= max(settings.band_width_estimate * 4, 30):
+                        score = float(np.sum(row_med_dev[s:e+1]) * (1.0 + np.max(coverage_h[s:e+1]) * 2.0))
+                        peak_d = float(np.max(row_med_dev[s:e+1]))
+                        h_candidates.append(ClassicalBand(
+                            id=f"h_{s}_{e}",
+                            orientation="horizontal",
+                            start_px=s,
+                            end_px=e,
+                            score=round(score, 2),
+                            peak_dev=round(peak_d, 2),
+                            enabled=True,
+                        ))
+            if in_b:
+                e = h_end - 1
+                w = e - s + 1
+                if w <= max(settings.band_width_estimate * 4, 30):
+                    score = float(np.sum(row_med_dev[s:e+1]) * (1.0 + np.max(coverage_h[s:e+1]) * 2.0))
+                    peak_d = float(np.max(row_med_dev[s:e+1]))
+                    h_candidates.append(ClassicalBand(
+                        id=f"h_{s}_{e}",
                         orientation="horizontal",
-                        start_px=s_idx + h_start,
-                        end_px=e_idx + h_start,
+                        start_px=s,
+                        end_px=e,
                         score=round(score, 2),
-                        peak_dev=round(max_dev, 2),
+                        peak_dev=round(peak_d, 2),
                         enabled=True,
                     ))
 
-    # ── Vertical Analysis (mean down columns & column Laplacian) ──────────────
-    v_start = max(0, int(math.floor(cols * settings.border_exclude_ratio)))
-    v_end = min(cols, int(math.ceil(cols * (1.0 - settings.border_exclude_ratio))))
+    # ── Vertical Analysis (Columns down Rows) ─────────────────────────────
+    if orient in ("auto", "vertical", "both") and cols > 6:
+        v_start = max(1, int(cols * settings.border_exclude_ratio))
+        v_end = min(cols - 1, int(cols * (1.0 - settings.border_exclude_ratio)))
 
-    if v_end > v_start + 6:
-        v_profile = np.mean(img_norm, axis=0)[v_start:v_end]
-        n_v = len(v_profile)
-        v_win = max(5, min(51, n_v // 20))
-        if v_win % 2 == 0:
-            v_win += 1
+        if v_end > v_start + 4:
+            # 2nd derivative across horizontal axis (H, W-2)
+            lap_v = np.abs(img_norm[:, 1:-1] - 0.5 * (img_norm[:, :-2] + img_norm[:, 2:]))
+            med_lap_v = float(np.median(lap_v))
+            mad_lap_v = float(np.median(np.abs(lap_v - med_lap_v)))
+            noise_sigma_v = max(1.4826 * mad_lap_v, 1.0)
+            pixel_thresh_v = max(noise_sigma_v * settings.detection_sensitivity, 6.0)
 
-        v_baseline = median_filter_1d(v_profile, v_win)
-        v_dev = v_profile - v_baseline
-        v_med = float(np.median(v_dev))
-        v_mad = float(np.median(np.abs(v_dev - v_med)))
-        v_robust_std = max(1.4826 * v_mad, 0.2)
-        v_thresh = settings.detection_sensitivity * v_robust_std
-        v_profile_flag = np.abs(v_dev - v_med) > v_thresh
+            # Measure coverage: fraction of rows in column c with abnormal deviation
+            coverage_v = np.pad((lap_v > pixel_thresh_v).mean(axis=0), (1, 1), mode="constant")
+            col_med_dev = np.pad(np.median(lap_v, axis=0), (1, 1), mode="constant")
 
-        if cols > 4:
-            diff_v = np.abs(img_norm[:, 1:-1] - 0.5 * (img_norm[:, :-2] + img_norm[:, 2:]))
-            col_lap = np.percentile(diff_v, 40, axis=0)
-            col_lap = np.pad(col_lap, (1, 1), mode="edge")[v_start:v_end]
-            lap_base_v = median_filter_1d(col_lap, v_win)
-            lap_dev_v = col_lap - lap_base_v
-            lap_med_v = float(np.median(lap_dev_v))
-            lap_mad_v = float(np.median(np.abs(lap_dev_v - lap_med_v)))
-            lap_std_v = max(1.4826 * lap_mad_v, 0.2)
-            v_lap_flag = (lap_dev_v - lap_med_v) > (settings.detection_sensitivity * lap_std_v)
-        else:
-            v_lap_flag = np.zeros(n_v, dtype=bool)
-            lap_dev_v = np.zeros(n_v, dtype=np.float64)
+            v_profile = np.mean(img_norm, axis=0)
+            v_win = max(5, min(51, len(v_profile) // 20 | 1))
+            v_dev = np.abs(v_profile - median_filter_1d(v_profile, v_win))
+            mad_pv = float(np.median(np.abs(v_dev - np.median(v_dev))))
+            prof_thresh_v = max(1.4826 * mad_pv * settings.detection_sensitivity, 4.0)
 
-        v_flag = v_profile_flag | v_lap_flag
+            flagged_v = (coverage_v >= settings.min_coverage_ratio) | (
+                (coverage_v >= 0.20) & (v_dev >= prof_thresh_v)
+            )
 
-        in_reg = False
-        reg_start = 0
-        v_regions: List[Tuple[int, int]] = []
-        for i, val in enumerate(v_flag):
-            if val and not in_reg:
-                in_reg = True
-                reg_start = i
-            elif not val and in_reg:
-                in_reg = False
-                v_regions.append((reg_start, i - 1))
-        if in_reg:
-            v_regions.append((reg_start, len(v_flag) - 1))
-
-        max_allowed_w = max(settings.band_width_estimate * 6, 40)
-        for s_idx, e_idx in v_regions:
-            w = e_idx - s_idx + 1
-            if w <= max_allowed_w:
-                seg_dev = np.abs(v_dev[s_idx:e_idx + 1])
-                sum_dev = float(np.sum(seg_dev))
-                max_dev = float(np.max(seg_dev))
-                lap_s = float(np.sum(lap_dev_v[s_idx:e_idx + 1])) if cols > 4 else 0.0
-                score = max(sum_dev, lap_s * 2.0) * (1.0 + max_dev / 10.0)
-                if score > 0:
-                    bands.append(ClassicalBand(
-                        id=f"v_{s_idx + v_start}_{e_idx + v_start}",
+            in_b = False
+            s = 0
+            for c in range(v_start, v_end):
+                if flagged_v[c] and not in_b:
+                    in_b = True
+                    s = c
+                elif not flagged_v[c] and in_b:
+                    in_b = False
+                    e = c - 1
+                    w = e - s + 1
+                    if w <= max(settings.band_width_estimate * 4, 30):
+                        score = float(np.sum(col_med_dev[s:e+1]) * (1.0 + np.max(coverage_v[s:e+1]) * 2.0))
+                        peak_d = float(np.max(col_med_dev[s:e+1]))
+                        v_candidates.append(ClassicalBand(
+                            id=f"v_{s}_{e}",
+                            orientation="vertical",
+                            start_px=s,
+                            end_px=e,
+                            score=round(score, 2),
+                            peak_dev=round(peak_d, 2),
+                            enabled=True,
+                        ))
+            if in_b:
+                e = v_end - 1
+                w = e - s + 1
+                if w <= max(settings.band_width_estimate * 4, 30):
+                    score = float(np.sum(col_med_dev[s:e+1]) * (1.0 + np.max(coverage_v[s:e+1]) * 2.0))
+                    peak_d = float(np.max(col_med_dev[s:e+1]))
+                    v_candidates.append(ClassicalBand(
+                        id=f"v_{s}_{e}",
                         orientation="vertical",
-                        start_px=s_idx + v_start,
-                        end_px=e_idx + v_start,
+                        start_px=s,
+                        end_px=e,
                         score=round(score, 2),
-                        peak_dev=round(max_dev, 2),
+                        peak_dev=round(peak_d, 2),
                         enabled=True,
                     ))
+
+    # ── Orientation Disambiguation & Prominence Filtering ────────────────
+    if orient == "auto":
+        sum_h = sum(b.score for b in h_candidates)
+        sum_v = sum(b.score for b in v_candidates)
+        if sum_h > 2.5 * sum_v:
+            bands = h_candidates
+        elif sum_v > 2.5 * sum_h:
+            bands = v_candidates
+        else:
+            bands = h_candidates + v_candidates
+    elif orient == "horizontal":
+        bands = h_candidates
+    elif orient == "vertical":
+        bands = v_candidates
+    else:
+        bands = h_candidates + v_candidates
+
+    # Filter out weak spurious candidates relative to the dominant artifact peak
+    if bands:
+        max_score = max(b.score for b in bands)
+        prominence_floor = max(max_score * 0.05, 10.0)
+        bands = [b for b in bands if b.score >= prominence_floor]
 
     bands.sort(key=lambda b: b.score, reverse=True)
     return bands
@@ -316,11 +327,15 @@ def correct_bands(
     img: np.ndarray,
     bands: List[ClassicalBand],
     settings: ClassicalSettings | None = None,
-    expand_px: int = 2,
+    expand_px: int = 1,
 ) -> np.ndarray:
     """
-    Interpolates through the band regions using surrounding context.
-    Works directly on 2D arrays (preserves input dtype: uint8, uint16, int16, float).
+    Interpolates through artifact band regions using surrounding context.
+    Features:
+      1. Edge-preserving smoothstep / monotonic boundary interpolation
+      2. Coherent texture synthesis (preserves medical quantum mottle)
+      3. No collateral orthogonal blurring
+      4. Preserves input dtype (uint8, uint16, int16, float32/64)
     """
     if settings is None:
         settings = ClassicalSettings()
@@ -330,31 +345,58 @@ def correct_bands(
     rows, cols = corrected.shape[:2]
 
     active_bands = [b for b in bands if b.enabled]
-    interp_neighbors = max(settings.neighbor_pixels, 15)
+    interp_method = getattr(settings, "interpolation_method", "smoothstep_texture")
 
     for band in active_bands:
         start_px = max(0, band.start_px - expand_px)
 
         if band.orientation == "vertical":
             end_px = min(cols - 1, band.end_px + expand_px)
-            left_start = max(0, start_px - interp_neighbors)
-            right_end = min(cols - 1, end_px + interp_neighbors)
+            c_left = max(0, start_px - 1)
+            c_right = min(cols - 1, end_px + 1)
+            n_cols = end_px - start_px + 1
 
-            x_left = np.arange(left_start, start_px)
-            x_right = np.arange(end_px + 1, right_end + 1)
-            x_good = np.concatenate((x_left, x_right))
-            x_bad = np.arange(start_px, end_px + 1)
+            left_col = corrected[:, c_left]
+            right_col = corrected[:, c_right]
 
-            if len(x_good) >= 2 and len(x_bad) > 0:
-                for r in range(rows):
-                    y_good = corrected[r, x_good]
-                    if settings.interpolation_method == "linear":
-                        interp_vals = linear_interpolate(x_good, y_good, x_bad)
+            # Texture matching noise scale from clean adjacent columns
+            c_outer = max(0, c_left - 1)
+            noise_scale = float(np.std(corrected[:, c_left] - corrected[:, c_outer])) / 1.4142
+
+            if interp_method in ("smoothstep_texture", "linear_texture", "smoothstep"):
+                for idx, c in enumerate(range(start_px, end_px + 1)):
+                    t = (idx + 1.0) / (n_cols + 1.0)
+                    w = 3.0 * t * t - 2.0 * t * t * t  # Smoothstep
+                    interp_col = (1.0 - w) * left_col + w * right_col
+
+                    if getattr(settings, "texture_matching", True) and noise_scale > 0.5:
+                        edge_mag = np.abs(np.gradient(interp_col))
+                        flatness = np.exp(-(edge_mag / 10.0) ** 2)
+                        np.random.seed(c * 1000 + 42)
+                        noise = np.random.normal(0, noise_scale * 0.7, rows) * flatness
+                        corrected[:, c] = interp_col + noise
                     else:
-                        interp_vals = pchip_interpolate(x_good, y_good, x_bad)
-                    corrected[r, x_bad] = interp_vals
+                        corrected[:, c] = interp_col
 
-            # Orthogonal 1D Gaussian smoothing along columns
+            elif interp_method == "linear":
+                for idx, c in enumerate(range(start_px, end_px + 1)):
+                    t = (idx + 1.0) / (n_cols + 1.0)
+                    corrected[:, c] = (1.0 - t) * left_col + t * right_col
+
+            elif interp_method == "pchip":
+                interp_neighbors = max(settings.neighbor_pixels, 10)
+                left_start = max(0, start_px - interp_neighbors)
+                right_end = min(cols - 1, end_px + interp_neighbors)
+                x_left = np.arange(left_start, start_px)
+                x_right = np.arange(end_px + 1, right_end + 1)
+                x_good = np.concatenate((x_left, x_right))
+                x_bad = np.arange(start_px, end_px + 1)
+
+                if len(x_good) >= 2 and len(x_bad) > 0:
+                    for r in range(rows):
+                        corrected[r, x_bad] = pchip_interpolate(x_good, corrected[r, x_good], x_bad)
+
+            # Optional smoothing along the column axis only
             if settings.gaussian_sigma > 0:
                 for c in range(start_px, end_px + 1):
                     corrected[:, c] = gaussian_filter_1d(corrected[:, c], settings.gaussian_sigma)
@@ -362,24 +404,51 @@ def correct_bands(
         else:
             # Horizontal band
             end_px = min(rows - 1, band.end_px + expand_px)
-            top_start = max(0, start_px - interp_neighbors)
-            bottom_end = min(rows - 1, end_px + interp_neighbors)
+            r_top = max(0, start_px - 1)
+            r_bot = min(rows - 1, end_px + 1)
+            n_rows = end_px - start_px + 1
 
-            y_top = np.arange(top_start, start_px)
-            y_bottom = np.arange(end_px + 1, bottom_end + 1)
-            y_good = np.concatenate((y_top, y_bottom))
-            y_bad = np.arange(start_px, end_px + 1)
+            top_row = corrected[r_top, :]
+            bot_row = corrected[r_bot, :]
 
-            if len(y_good) >= 2 and len(y_bad) > 0:
-                for c in range(cols):
-                    vals_good = corrected[y_good, c]
-                    if settings.interpolation_method == "linear":
-                        interp_vals = linear_interpolate(y_good, vals_good, y_bad)
+            # Texture matching noise scale from clean adjacent rows
+            r_outer = max(0, r_top - 1)
+            noise_scale = float(np.std(corrected[r_top, :] - corrected[r_outer, :])) / 1.4142
+
+            if interp_method in ("smoothstep_texture", "linear_texture", "smoothstep"):
+                for idx, r in enumerate(range(start_px, end_px + 1)):
+                    t = (idx + 1.0) / (n_rows + 1.0)
+                    w = 3.0 * t * t - 2.0 * t * t * t  # Smoothstep
+                    interp_row = (1.0 - w) * top_row + w * bot_row
+
+                    if getattr(settings, "texture_matching", True) and noise_scale > 0.5:
+                        edge_mag = np.abs(np.gradient(interp_row))
+                        flatness = np.exp(-(edge_mag / 10.0) ** 2)
+                        np.random.seed(r * 1000 + 42)
+                        noise = np.random.normal(0, noise_scale * 0.7, cols) * flatness
+                        corrected[r, :] = interp_row + noise
                     else:
-                        interp_vals = pchip_interpolate(y_good, vals_good, y_bad)
-                    corrected[y_bad, c] = interp_vals
+                        corrected[r, :] = interp_row
 
-            # Orthogonal 1D Gaussian smoothing along rows
+            elif interp_method == "linear":
+                for idx, r in enumerate(range(start_px, end_px + 1)):
+                    t = (idx + 1.0) / (n_rows + 1.0)
+                    corrected[r, :] = (1.0 - t) * top_row + t * bot_row
+
+            elif interp_method == "pchip":
+                interp_neighbors = max(settings.neighbor_pixels, 10)
+                top_start = max(0, start_px - interp_neighbors)
+                bottom_end = min(rows - 1, end_px + interp_neighbors)
+                y_top = np.arange(top_start, start_px)
+                y_bottom = np.arange(end_px + 1, bottom_end + 1)
+                y_good = np.concatenate((y_top, y_bottom))
+                y_bad = np.arange(start_px, end_px + 1)
+
+                if len(y_good) >= 2 and len(y_bad) > 0:
+                    for c in range(cols):
+                        corrected[y_bad, c] = pchip_interpolate(y_good, corrected[y_good, c], y_bad)
+
+            # Optional smoothing along the row axis only
             if settings.gaussian_sigma > 0:
                 for r in range(start_px, end_px + 1):
                     corrected[r, :] = gaussian_filter_1d(corrected[r, :], settings.gaussian_sigma)
